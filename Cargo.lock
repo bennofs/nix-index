@@ -1244,14 +1244,13 @@ dependencies = [
 
 [[package]]
 name = "tokio-retry"
-version = "0.1.1"
+version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f05746ae87dca83a2016b4f5dba5b237b897dd12fd324f60afe282112f16969a"
+checksum = "9c03755b956458582182941061def32b8123a26c98b08fc6ddcf49ae89d18f33"
 dependencies = [
  "futures",
- "rand 0.3.22",
- "tokio-core",
- "tokio-service",
+ "rand 0.4.3",
+ "tokio-timer 0.2.6",
 ]
 
 [[package]]
