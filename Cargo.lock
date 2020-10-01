@@ -417,15 +417,9 @@ dependencies = [
 
 [[package]]
 name = "isatty"
-version = "0.1.9"
+version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e31a8281fc93ec9693494da65fbf28c0c2aa60a2eaec25dc58e2f31952e95edc"
-dependencies = [
- "cfg-if",
- "libc",
- "redox_syscall",
- "winapi 0.3.5",
-]
+checksum = "05ed1865a9f01be9ed3bd618b241fb46bf2fbf1563368ca275fb491f0ecb5047"
 
 [[package]]
 name = "itoa"
