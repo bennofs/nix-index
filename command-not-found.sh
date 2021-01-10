@@ -43,7 +43,11 @@ command_not_found_handle () {
 The program '$cmd' is currently not installed. It is provided by
 the package '$toplevel.$attrs', which I will now install for you.
 EOF
-                nix-env -iA $toplevel.$attrs
+                if [ -e "$HOME/.nix-profile/manifest.json" ]; then
+                    nix profile install $toplevel#$attrs
+                else
+                    nix-env -iA $toplevel.$attrs
+                fi
                 if [ "$?" -eq 0 ]; then
                     $@ # TODO: handle pipes correctly if AUTO_RUN/INSTALL is possible
                     return $?
@@ -67,11 +71,19 @@ $cmd: command not found
 EOF
                 fi
             else
-                >&2 cat <<EOF
+                if [ -e "$HOME/.nix-profile/manifest.json" ]; then
+                    >&2 cat <<EOF
+The program '$cmd' is currently not installed. You can install it
+by typing:
+  nix profile install $toplevel#$attrs
+EOF
+                else
+                    >&2 cat <<EOF
 The program '$cmd' is currently not installed. You can install it
 by typing:
   nix-env -iA $toplevel.$attrs
 EOF
+                fi
             fi
             ;;
         *)
@@ -83,7 +95,11 @@ EOF
             # ensure we get each element of attrs
             # in a cross platform way
             while read attr; do
-                >&2 echo "  nix-env -iA $toplevel.$attr"
+                if [ -e "$HOME/.nix-profile/manifest.json" ]; then
+                    >&2 echo "  nix profile install $toplevel#$attr"
+                else
+                    >&2 echo "  nix-env -iA $toplevel.$attr"
+                fi
             done <<< "$attrs"
             ;;
     esac
