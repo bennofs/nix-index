@@ -643,7 +643,7 @@ dependencies = [
  "stderr",
  "tokio-core",
  "tokio-retry",
- "tokio-timer 0.1.2",
+ "tokio-timer",
  "url",
  "void",
  "xdg",
@@ -1130,7 +1130,7 @@ dependencies = [
  "tokio-reactor",
  "tokio-tcp",
  "tokio-threadpool",
- "tokio-timer 0.2.6",
+ "tokio-timer",
  "tokio-udp",
  "tokio-uds",
 ]
@@ -1162,7 +1162,7 @@ dependencies = [
  "tokio-executor",
  "tokio-io",
  "tokio-reactor",
- "tokio-timer 0.2.6",
+ "tokio-timer",
 ]
 
 [[package]]
@@ -1290,16 +1290,6 @@ dependencies = [
  "num_cpus",
  "rand 0.5.5",
  "tokio-executor",
-]
-
-[[package]]
-name = "tokio-timer"
-version = "0.1.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6131e780037787ff1b3f8aad9da83bca02438b72277850dd6ad0d455e0e20efc"
-dependencies = [
- "futures",
- "slab 0.3.0",
 ]
 
 [[package]]
