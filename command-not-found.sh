@@ -71,6 +71,9 @@ EOF
 The program '$cmd' is currently not installed. You can install it
 by typing:
   nix-env -iA $toplevel.$attrs
+
+Or run it once with:
+  nix-shell -p $attrs --run ...
 EOF
             fi
             ;;
@@ -84,6 +87,15 @@ EOF
             # in a cross platform way
             while read attr; do
                 >&2 echo "  nix-env -iA $toplevel.$attr"
+            done <<< "$attrs"
+
+            >&2 cat <<EOF
+
+Or run it once with:
+EOF
+
+            while read attr; do
+                >&2 echo "  nix-shell -p $attr --run ..."
             done <<< "$attrs"
             ;;
     esac
