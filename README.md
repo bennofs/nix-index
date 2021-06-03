@@ -42,7 +42,7 @@ Nix-index provides a "command-not-found" script that can print for you the attri
 
 ```nix
     programs.command-not-found.enable = false;
-    programs.bash.interactiveShellInit = ''
+    programs.bash.initExtra = ''
       source ${pkgs.nix-index}/etc/profile.d/command-not-found.sh
     '';
 ```
