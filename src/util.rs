@@ -38,37 +38,3 @@ pub fn write_temp_file(base_name: &str, contents: &[u8]) -> Option<PathBuf> {
     }
     path
 }
-
-/// Wraps a function that produces either a future or an error in a future.
-///
-/// # Example
-///
-/// ```rust
-/// # extern crate futures;
-/// # extern crate nix_index;
-/// # use futures::{Future, future};
-/// # use nix_index::util::future_result;
-///
-/// fn make_value() -> Result<u8, &'static str> {
-///     unimplemented!()
-/// }
-///
-/// fn make_future() -> Box<Future<Item=u8, Error=&'static str>> {
-///     Box::new(future_result(|| {
-///         let value = try!(make_value());
-///          Ok(future::ok(value))
-///     }))
-/// }
-///
-/// # fn main() {}
-/// ```
-pub fn future_result<F, A>(f: F) -> Either<A::Future, FutureResult<A::Item, A::Error>>
-where
-    A: IntoFuture,
-    F: FnOnce() -> Result<A, A::Error>,
-{
-    match f() {
-        Ok(v) => Either::A(v.into_future()),
-        Err(e) => Either::B(future::err(e)),
-    }
-}

@@ -31,9 +31,9 @@ use tokio_timer::{self, TimeoutError, Timer};
 use url::Url;
 use xz2::write::XzDecoder;
 
-use files::FileTree;
-use package::{PathOrigin, StorePath};
-use util;
+use crate::files::FileTree;
+use crate::package::{PathOrigin, StorePath};
+use crate::util;
 
 error_chain! {
     errors {
@@ -608,52 +608,52 @@ impl<'de> Deserialize<'de> for HydraFileListing {
                 let mut entries: Option<HashMap<ByteBuf, HydraFileListing>> = None;
                 let mut target: Option<ByteBuf> = None;
 
-                while let Some(key) = try!(access.next_key::<ByteBuf>()) {
+                while let Some(key) = access.next_key::<ByteBuf>()? {
                     match &key as &[u8] {
                         b"type" => {
                             if typ.is_some() {
                                 return Err(serde::de::Error::duplicate_field("type"));
                             }
-                            typ = Some(try!(access.next_value()))
+                            typ = Some(access.next_value()?)
                         }
                         b"size" => {
                             if size.is_some() {
                                 return Err(serde::de::Error::duplicate_field("size"));
                             }
-                            size = Some(try!(access.next_value()))
+                            size = Some(access.next_value()?)
                         }
                         b"executable" => {
                             if executable.is_some() {
                                 return Err(serde::de::Error::duplicate_field("executable"));
                             }
-                            executable = Some(try!(access.next_value()))
+                            executable = Some(access.next_value()?)
                         }
                         b"entries" => {
                             if entries.is_some() {
                                 return Err(serde::de::Error::duplicate_field("entries"));
                             }
-                            entries = Some(try!(access.next_value()))
+                            entries = Some(access.next_value()?)
                         }
                         b"target" => {
                             if target.is_some() {
                                 return Err(serde::de::Error::duplicate_field("target"));
                             }
-                            target = Some(try!(access.next_value()))
+                            target = Some(access.next_value()?)
                         }
                         _ => {
                             // We ignore all other fields to be more robust against changes in
                             // the format
-                            try!(access.next_value::<serde::de::IgnoredAny>());
+                            access.next_value::<serde::de::IgnoredAny>()?;
                         }
                     }
                 }
 
                 // the type field must always be present so we know which type to expect
-                let typ =
-                    &try!(typ.ok_or_else(|| serde::de::Error::missing_field("type"))) as &[u8];
+                let typ: &[u8] = &*typ.ok_or_else(|| serde::de::Error::missing_field("type"))?;
+
 
                 match typ {
-                    b"regular" => {
+                    b"byte" => {
                         let size = size.ok_or_else(|| serde::de::Error::missing_field("size"))?;
                         let executable = executable.unwrap_or(false);
                         Ok(FileTree::regular(size, executable))

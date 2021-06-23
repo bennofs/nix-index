@@ -11,7 +11,7 @@ use std::process::{Command, Stdio, Child, ChildStdout};
 use std::fmt;
 use std::error;
 
-use package::{PathOrigin, StorePath};
+use crate::package::{PathOrigin, StorePath};
 
 /// Calls `nix-env` to list the packages in the given nixpkgs.
 ///

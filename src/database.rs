@@ -12,9 +12,9 @@ use regex::bytes::Regex;
 use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
 use serde_json;
 
-use package::StorePath;
-use files::{FileTree, FileTreeEntry};
-use frcode;
+use crate::package::StorePath;
+use crate::files::{FileTree, FileTreeEntry};
+use crate::frcode;
 
 /// The version of the database format supported by this nix-index version.
 ///
@@ -345,7 +345,7 @@ impl<'a, 'b> ReaderIter<'a, 'b> {
                     if !should_search_package(&pkg) {
                         // all entries before end will have the same package
                         pos = end;
-                        self.found_without_package.split_off(0);
+                        self.found_without_package.truncate(0);
                     } else {
                         for entry in self.found_without_package.split_off(0) {
                             self.found.push((pkg.clone(), entry));

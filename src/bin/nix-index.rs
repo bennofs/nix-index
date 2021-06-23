@@ -215,7 +215,7 @@ fn update_index(
             "coqPackages",
         ];
 
-        let all_paths = normal_paths.chain(extra_scopes.into_iter().flat_map(|scope| {
+        let all_paths = normal_paths.chain(extra_scopes.iter().flat_map(|scope| {
             nixpkgs::query_packages(&args.nixpkgs, Some(scope), args.show_trace)
         }));
 

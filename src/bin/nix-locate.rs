@@ -101,7 +101,7 @@ fn locate(args: &Args) -> Result<()> {
         let (store_path, FileTreeEntry { path, node }) =
             v.chain_err(|| ErrorKind::ReadDatabase(index_file.clone()))?;
 
-        use files::FileNode::*;
+        use crate::files::FileNode::*;
         let (typ, size) = match node {
             Regular { executable, size } => (if executable { "x" } else { "r" }, size),
             Directory { size, contents: () }=> ("d", size),

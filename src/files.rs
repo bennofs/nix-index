@@ -8,7 +8,7 @@ use std::str;
 use std::io::{self, Write};
 use memchr::memchr;
 
-use frcode;
+use crate::frcode;
 
 /// This enum represents a single node in a file tree.
 ///
@@ -102,7 +102,6 @@ impl<T> FileNode<T> {
 
     /// Return the type of this file.
     pub fn get_type(&self) -> FileType {
-        use self::{FileNode, FileType};
         match *self {
             FileNode::Regular { executable, .. } => FileType::Regular { executable: executable },
             FileNode::Directory { .. } => FileType::Directory,

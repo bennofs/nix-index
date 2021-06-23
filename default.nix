@@ -1,6 +1,6 @@
 let
-  # nixpkgs-unstable at 2019-07-06 16:03
-  nixpkgsRev = "df738814d1bed1a554eac1536e99253ab75ba012";
+  # nixpkgs-21.05
+  nixpkgsRev = "970cb0a6dd23309f81bc2629de62b22f930fb218";
   defaultNixpkgs = builtins.fetchTarball "github.com/NixOS/nixpkgs/archive/${nixpkgsRev}.tar.gz";
 in
 { nixpkgs ? defaultNixpkgs }:
@@ -12,8 +12,8 @@ buildRustPackage rec {
   version = "0.1.2";
 
   src = builtins.filterSource (name: type: !lib.hasPrefix "target" (baseNameOf name) && !lib.hasPrefix "result" (baseNameOf name) && name != ".git") ./.;
-  buildInputs = [pkgconfig openssl curl];
-  cargoSha256 = "10cg4wf36hkzp4fbws0f6wk12zkh6gsy92raq4d6kyhp7myp7p3d";
+  buildInputs = [pkgconfig openssl curl] ++ lib.optionals stdenv.isDarwin [ darwin.apple_sdk.frameworks.Security ] ;
+  cargoSha256 = "0jndrr1lyvbc5fjbm9hnxis3hkd120awipnqnqqnaddqhvlsx85f";
 
   postInstall = ''
     mkdir -p $out/etc/profile.d
@@ -22,7 +22,7 @@ buildRustPackage rec {
       --replace "@out@" "$out"
   '';
 
-  meta = with stdenv.lib; {
+  meta = with lib; {
     description = "A files database for nixpkgs";
     homepage = https://github.com/bennofs/nix-index;
     license = with licenses; [ bsd3 ];
