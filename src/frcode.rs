@@ -57,29 +57,47 @@ use std::cmp;
 use std::ops::{Deref, DerefMut};
 use memchr;
 
-error_chain!{
-    foreign_links {
-        Io(io::Error);
-    }
-    errors {
-        SharedOutOfRange { previous_len: usize, shared_len: isize } {
-            description("shared prefix length out of bounds")
-            display("length of shared prefix must be >= 0 and <= {} (length of previous item), but found: {}", previous_len, shared_len)
-        }
-        SharedOverflow { shared_len: isize, diff: isize } {
-            description("shared prefix length too big (overflow)")
-            display("length of shared prefix too big: cannot add {} to {} without overflow", shared_len, diff)
-        } 
-        MissingNul {
-            description("missing terminating NUL byte for entry")
-        }
-        MissingNewline {
-            description("missing newline separator for entry")
-        }
-        MissingPrefixDifferential {
-            description("missing the shared prefix length differential for entry")
-        }
-    }
+// error_chain!{
+//     foreign_links {
+//         Io(io::Error);
+//     }
+//     errors {
+//         SharedOutOfRange { previous_len: usize, shared_len: isize } {
+//             description("shared prefix length out of bounds")
+//             
+//         }
+//         SharedOverflow { shared_len: isize, diff: isize } {
+//             description("shared prefix length too big (overflow)")
+//             
+//         } 
+//         MissingNul {
+//             
+//         }
+//         MissingNewline {
+//             
+//         }
+//         MissingPrefixDifferential {
+//             
+//         }
+//     }
+// }
+
+use thiserror::Error as ThisError;
+
+#[derive(ThisError, Debug)]
+pub enum  Error {
+    #[error("length of shared prefix must be >= 0 and <= {} (length of previous item), but found: {}", previous_len, shared_len)]
+    SharedOutOfRange { previous_len: usize, shared_len: isize },
+    #[error("length of shared prefix too big: cannot add {} to {} without overflow", shared_len, diff)]
+    SharedOverflow{ shared_len: isize, diff: isize },
+    #[error("missing terminating NUL byte for entry")]
+    MissingNul,
+    #[error("missing newline separator for entry")]
+    MissingNewline,
+    #[error("missing the shared prefix length differential for entry")]
+    MissingPrefixDifferential,
+    #[error("IO Error {0}")]
+    Io(#[from] io::Error)
 }
 
 /// A buffer that may be resizable or not. This is used for decoding,
@@ -178,7 +196,7 @@ impl<R: BufRead> Decoder<R> {
     ///
     /// Returns false if the buffer was too small and could not be resized. In this case, no
     /// bytes will be copied.
-    fn copy_shared(&mut self) -> Result<bool> {
+    fn copy_shared(&mut self) -> Result<bool, Error> {
         let shared_len = self.shared_len as usize;
         let new_pos = self.pos + shared_len;
         let new_last_path = self.pos;
@@ -188,7 +206,7 @@ impl<R: BufRead> Decoder<R> {
 
 
         if self.shared_len < 0 || self.last_path + shared_len > self.pos {
-            bail!(ErrorKind::SharedOutOfRange {
+            return Err(Error::SharedOutOfRange {
                 previous_len: self.pos - self.last_path,
                 shared_len: self.shared_len,
             });
@@ -211,7 +229,7 @@ impl<R: BufRead> Decoder<R> {
     /// have already been copied to the output buffer in this case.
     ///
     /// It will also return false if the end of the input was reached.
-    fn read_to_nul(&mut self) -> Result<bool> {
+    fn read_to_nul(&mut self) -> Result<bool, Error> {
         loop {
             let (done, len) = {
                 let &mut Decoder {
@@ -254,18 +272,18 @@ impl<R: BufRead> Decoder<R> {
 
     /// Read the differential from the input reader. This function will return an error
     /// if the end of input has been reached.
-    fn decode_prefix_diff(&mut self) -> Result<i16> {
+    fn decode_prefix_diff(&mut self) -> Result<i16, Error> {
         let mut buf = [0; 1];
-        self.reader.read_exact(&mut buf).chain_err(|| {
-            ErrorKind::MissingPrefixDifferential
+        self.reader.read_exact(&mut buf).map_err(|e| {
+            Error::MissingPrefixDifferential
         })?;
 
         if buf[0] != 0x80 {
             Ok((buf[0] as i8) as i16)
         } else {
             let mut buf = [0; 2];
-            self.reader.read_exact(&mut buf).chain_err(|| {
-                ErrorKind::MissingPrefixDifferential
+            self.reader.read_exact(&mut buf).map_err(|e| {
+                Error::MissingPrefixDifferential
             })?;
             let high = buf[0] as i16;
             let low = buf[1] as i16;
@@ -283,7 +301,7 @@ impl<R: BufRead> Decoder<R> {
     /// The function does not return partially decoded entries. Because of this, the size of returned
     /// slice will vary from call to call. The last entry which did not fully fit into the buffer yet
     /// will be returned as the first entry at the next call.
-    pub fn decode(&mut self) -> Result<&mut [u8]> {
+    pub fn decode(&mut self) -> Result<&mut [u8], Error> {
         // Save end pointer from previous iteration and reset write position
         let end = self.pos;
         self.pos = 0;
@@ -358,7 +376,7 @@ impl<R: BufRead> Decoder<R> {
 
             // Update the shared len
             self.shared_len = self.shared_len.checked_add(diff).ok_or_else(|| {
-                ErrorKind::SharedOverflow {
+                Error::SharedOverflow {
                     shared_len: self.shared_len,
                     diff: diff,
                 }
@@ -373,7 +391,7 @@ impl<R: BufRead> Decoder<R> {
         // Since we don't want to return partially decoded items, we need to find the end of the last entry.
         self.partial_entry_start = memchr::memrchr(b'\n', &self.buf[..self.pos]).ok_or_else(
             || {
-                ErrorKind::MissingNewline
+                Error::MissingNewline
             },
         )? + 1;
         Ok(&mut self.buf[item_start..self.partial_entry_start])

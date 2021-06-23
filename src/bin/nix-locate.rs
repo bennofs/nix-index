@@ -8,10 +8,10 @@ extern crate xdg;
 extern crate regex;
 extern crate isatty;
 extern crate ansi_term;
-#[macro_use]
-extern crate error_chain;
+
 #[macro_use]
 extern crate stderr;
+extern crate thiserror;
 
 use std::path::PathBuf;
 use std::result;
@@ -25,20 +25,16 @@ use ansi_term::Colour::Red;
 
 use nix_index::database;
 use nix_index::files::{self, FileType, FileTreeEntry};
+use thiserror::Error as ThisError;
 
-error_chain! {
-    errors {
-        ReadDatabase(database: PathBuf) {
-            description("database read error")
-            display("reading from the database at '{}' failed.\n\
-                     This may be caused by a corrupt or missing database, try (re)running `nix-index` to generate the database. \n\
-                     If the error persists please file a bug report at https://github.com/bennofs/nix-index.", database.to_string_lossy())
-        }
-        Grep(pattern: String) {
-            description("grep builder error")
-            display("constructing the regular expression from the pattern '{}' failed.", pattern)
-        }
-    }
+#[derive(ThisError, Debug)]
+pub enum Error {
+    #[error("reading from the database at '{}' failed.\n\
+    This may be caused by a corrupt or missing database, try (re)running `nix-index` to generate the database. \n\
+    If the error persists please file a bug report at https://github.com/bennofs/nix-index.", .0.to_string_lossy())]
+    ReadDatabase(PathBuf),
+    #[error("constructing the regular expression from the pattern '{}' failed.", .0)]
+    Grep(String)
 }
 
 /// The struct holding the parsed arguments for searching
@@ -57,28 +53,28 @@ struct Args {
 }
 
 /// The main function of this module: searches with the given options in the database.
-fn locate(args: &Args) -> Result<()> {
+fn locate(args: &Args) -> Result<(), Error> {
     // Build the regular expression matcher
-    let pattern = Regex::new(&args.pattern).chain_err(|| {
-        ErrorKind::Grep(args.pattern.clone())
+    let pattern = Regex::new(&args.pattern).map_err(|e| {
+        Error::Grep(args.pattern.clone())
     })?;
     let package_pattern = if let Some(ref pat) = args.package_pattern {
-        Some(Regex::new(pat).chain_err(|| ErrorKind::Grep(pat.clone()))?)
+        Some(Regex::new(pat).map_err(|e| Error::Grep(pat.clone()))?)
     } else {
         None
     };
 
     // Open the database
     let index_file = args.database.join("files");
-    let db = database::Reader::open(&index_file).chain_err(|| {
-        ErrorKind::ReadDatabase(index_file.clone())
+    let db = database::Reader::open(&index_file).map_err(|e| {
+        Error::ReadDatabase(index_file.clone())
     })?;
 
     let results = db.query(&pattern)
         .package_pattern(package_pattern.as_ref())
         .hash(args.hash.clone())
         .run()
-        .chain_err(|| ErrorKind::Grep(args.pattern.clone()))?
+        .map_err(|e| Error::Grep(args.pattern.clone()))?
         .filter(|v| {
             v.as_ref().ok().map_or(true, |v| {
                 let &(ref store_path, FileTreeEntry { ref path, ref node }) = v;
@@ -99,7 +95,7 @@ fn locate(args: &Args) -> Result<()> {
     let mut printed_attrs = HashSet::new();
     for v in results {
         let (store_path, FileTreeEntry { path, node }) =
-            v.chain_err(|| ErrorKind::ReadDatabase(index_file.clone()))?;
+            v.map_err(|e| Error::ReadDatabase(index_file.clone()))?;
 
         use files::FileNode::*;
         let (typ, size) = match node {
@@ -338,13 +334,13 @@ fn main() {
     if let Err(e) = locate(&args) {
         errln!("error: {}", e);
 
-        for e in e.iter().skip(1) {
-            errln!("caused by: {}", e);
-        }
+        // for e in e.iter().skip(1) {
+        //     errln!("caused by: {}", e);
+        // }
 
-        if let Some(backtrace) = e.backtrace() {
-            errln!("backtrace: {:?}", backtrace);
-        }
+        // if let Some(backtrace) = e.backtrace() {
+        //     errln!("backtrace: {:?}", backtrace);
+        // }
         process::exit(2);
     }
 }

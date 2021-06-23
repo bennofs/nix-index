@@ -35,7 +35,7 @@ extern crate xml;
 extern crate xz2;
 extern crate zstd;
 #[macro_use]
-extern crate error_chain;
+extern crate thiserror;
 extern crate brotli2;
 extern crate url;
 

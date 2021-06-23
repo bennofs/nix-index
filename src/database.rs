@@ -84,45 +84,40 @@ impl Writer {
     }
 }
 
-error_chain! {
-    errors {
-        UnsupportedFileType(found: Vec<u8>) {
-            description("unsupported file type")
-            display("expected file to start with nix-index file magic 'NIXI', but found '{}' (is this a valid nix-index database file?)", String::from_utf8_lossy(found))
-        }
-        UnsupportedVersion(found: u64) {
-            description("unsupported file version")
-            display("this executable only supports the nix-index database version {}, but found a database with version {}", FORMAT_VERSION, found)
-        }
-        MissingPackageEntry {
-            description("missing package entry for path")
-            display("database corrupt, found a file entry without a matching package entry")
-        }
-        Frcode(err: frcode::Error) {
-            description("frcode error")
-            display("database corrupt, frcode error: {}", err)
-        }
-        EntryParse(entry: Vec<u8>) {
-            description("entry parse failure")
-            display("database corrupt, could not parse entry: {:?}", String::from_utf8_lossy(entry))
-        }
-        StorePathParse(path: Vec<u8>) {
-            description("store path parse failure")
-            display("database corrupt, could not parse store path: {:?}", String::from_utf8_lossy(path))
-        }
-    }
 
-    foreign_links {
-        Io(io::Error);
-        Grep(grep::Error);
+use thiserror::Error;
+
+#[derive(Error, Debug)]
+pub enum DatabaseError {
+    #[error("expected file to start with nix-index file magic 'NIXI', but found '{}' (is this a valid nix-index database file?)", String::from_utf8_lossy(.0))]
+    UnsupportedFileType(Vec<u8>),
+    #[error("this executable only supports the nix-index database version {}, but found a database with version {}", FORMAT_VERSION, .0)]
+    UnsupportedVersion(u64),
+    #[error("database corrupt, found a file entry without a matching package entry")]
+    MissingPackageEntry(),
+    #[error("frcode errror")]
+    Frcode(frcode::Error),
+    #[error("database corrupt, could not parse entry: {:?}", String::from_utf8_lossy(.0))]
+    EntryParse(Vec<u8>),
+    #[error("database corrupt, could not parse store path: {:?}", String::from_utf8_lossy(.0))]
+    StorePathParse(Vec<u8>),
+    #[error("IO Error {0}")]
+    IO(#[from] io::Error),
+    #[error("Grep Error")]
+    Grep(#[from] grep::Error)
+}
+
+impl From<frcode::Error> for DatabaseError {
+    fn from(err: frcode::Error) -> DatabaseError {
+        DatabaseError::Frcode(err).into()
     }
 }
 
-impl From<frcode::Error> for Error {
-    fn from(err: frcode::Error) -> Error {
-        ErrorKind::Frcode(err).into()
-    }
-}
+// impl From<io::Error> for DatabaseError {
+//     fn from(err: io::Error) -> DatabaseError {
+//         Data
+//     }
+// }
 
 /// A Reader allows fast querying of a nix-index database.
 pub struct Reader {
@@ -133,18 +128,18 @@ impl Reader {
     /// Opens a nix-index database located at the given path.
     ///
     /// If the path does not exist or is not a valid database, an error is returned.
-    pub fn open<P: AsRef<Path>>(path: P) -> Result<Reader> {
+    pub fn open<P: AsRef<Path>>(path: P) -> Result<Reader, DatabaseError> {
         let mut file = File::open(path)?;
         let mut magic = [0u8; 4];
         file.read_exact(&mut magic)?;
 
         if magic != FILE_MAGIC {
-            return Err(ErrorKind::UnsupportedFileType(magic.to_vec()).into());
+            return Err(DatabaseError::UnsupportedFileType(magic.to_vec()).into());
         }
 
         let version = file.read_u64::<LittleEndian>()?;
         if version != FORMAT_VERSION {
-            return Err(ErrorKind::UnsupportedVersion(version).into());
+            return Err(DatabaseError::UnsupportedVersion(version).into());
         }
 
         let decoder = zstd::Decoder::new(file)?;
@@ -167,7 +162,7 @@ impl Reader {
 
     /// Dumps the contents of the database to stdout, for debugging.
     #[allow(clippy::print_stdout)]
-    pub fn dump(&mut self) -> Result<()> {
+    pub fn dump(&mut self) -> Result<(), DatabaseError> {
         loop {
             let block = self.decoder.decode()?;
             if block.is_empty() {
@@ -214,7 +209,7 @@ impl<'a, 'b> Query<'a, 'b> {
     /// Runs the query, returning an Iterator that will yield all entries matching the conditions.
     ///
     /// There is no guarantee about the order of the returned matches.
-    pub fn run(self) -> Result<ReaderIter<'a, 'b>> {
+    pub fn run(self) -> Result<ReaderIter<'a, 'b>, DatabaseError> {
         let mut expr = Expr::parse(self.exact_regex.as_str()).expect("regex cannot be invalid");
         // replace the ^ anchor by a NUL byte, since each entry is of the form `METADATA\0PATH`
         // (so the NUL byte marks the start of the path).
@@ -284,7 +279,7 @@ pub struct ReaderIter<'a, 'b> {
 impl<'a, 'b> ReaderIter<'a, 'b> {
     /// Reads input until `self.found` contains at least one entry or the end of the input has been reached.
     #[allow(unused_assignments)] // because of https://github.com/rust-lang/rust/issues/22630
-    fn fill_buf(&mut self) -> Result<()> {
+    fn fill_buf(&mut self) -> Result<(), DatabaseError> {
         // the input is processed in blocks until we've found at least a single entry
         while self.found.is_empty() {
             let &mut ReaderIter {
@@ -310,7 +305,7 @@ impl<'a, 'b> ReaderIter<'a, 'b> {
             // (after that, a new package begins).
             let mut cached_package: Option<(StorePath, usize)> = None;
             let mut no_more_package = false;
-            let mut find_package = |item_end| -> Result<_> {
+            let mut find_package = |item_end| -> Result<_, DatabaseError> {
                 if let Some((ref pkg, end)) = cached_package {
                     if item_end < end {
                         return Ok(Some((pkg.clone(), end)));
@@ -324,8 +319,8 @@ impl<'a, 'b> ReaderIter<'a, 'b> {
                 }
 
                 let json = &block[mat.start() + 2..mat.end() - 1];
-                let pkg: StorePath = serde_json::from_slice(json).chain_err(|| {
-                    ErrorKind::StorePathParse(json.to_vec())
+                let pkg: StorePath = serde_json::from_slice(json).map_err(|e| {
+                    DatabaseError::StorePathParse(json.to_vec())
                 })?;
                 cached_package = Some((pkg.clone(), mat.end()));
                 Ok(Some((pkg, mat.end())))
@@ -375,7 +370,7 @@ impl<'a, 'b> ReaderIter<'a, 'b> {
                 }
 
                 let entry = FileTreeEntry::decode(entry).ok_or_else(|| {
-                    Error::from(ErrorKind::EntryParse(entry.to_vec()))
+                    DatabaseError::EntryParse(entry.to_vec())
                 })?;
 
                 // check for false positives
@@ -393,14 +388,14 @@ impl<'a, 'b> ReaderIter<'a, 'b> {
     }
 
     /// Returns the next match in the database.
-    fn next_match(&mut self) -> Result<Option<(StorePath, FileTreeEntry)>> {
+    fn next_match(&mut self) -> Result<Option<(StorePath, FileTreeEntry)>, DatabaseError> {
         self.fill_buf()?;
         Ok(self.found.pop())
     }
 }
 
 impl<'a, 'b> Iterator for ReaderIter<'a, 'b> {
-    type Item = Result<(StorePath, FileTreeEntry)>;
+    type Item = Result<(StorePath, FileTreeEntry), DatabaseError>;
 
     fn next(&mut self) -> Option<Self::Item> {
         match self.next_match() {

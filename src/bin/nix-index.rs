@@ -11,13 +11,12 @@ extern crate tokio_retry;
 extern crate tokio_timer;
 extern crate void;
 extern crate xdg;
-#[macro_use]
-extern crate error_chain;
+extern crate thiserror;
+
 #[macro_use]
 extern crate stderr;
 
 use clap::{App, Arg, ArgMatches};
-use error_chain::ChainedError;
 use futures::future;
 use futures::{Future, Stream};
 use separator::Separatable;
@@ -30,6 +29,7 @@ use std::result;
 use std::str;
 use tokio_core::reactor::Core;
 use void::ResultVoidExt;
+use thiserror::Error as ThisError;
 
 use nix_index::database;
 use nix_index::files::FileTree;
@@ -43,45 +43,26 @@ use nix_index::workset::{WorkSet, WorkSetHandle, WorkSetWatch};
 /// Hardcoded for now, but may be made a configurable option in the future.
 const CACHE_URL: &'static str = "http://cache.nixos.org";
 
-error_chain! {
-    errors {
-        QueryPackages {
-            description("query packages error")
-            display("querying available packages failed")
-        }
-        FetchFiles(path: StorePath) {
-            description("file listing fetch error")
-            display("fetching the file listing for store path '{}' failed", path.as_str())
-        }
-        FetchReferences(path: StorePath) {
-            description("references fetch error")
-            display("fetching the references of store path '{}' failed", path.as_str())
-        }
-        LoadPathsCache {
-            description("paths.cache load error")
-            display("loading the paths.cache file failed")
-        }
-        WritePathsCache {
-            description("paths.cache write error")
-            display("writing the paths.cache file failed")
-        }
-        CreateDatabase(path: PathBuf) {
-            description("crate database error")
-            display("creating the database at '{}' failed", path.to_string_lossy())
-        }
-        CreateDatabaseDir(path: PathBuf) {
-            description("crate database directory error")
-            display("creating the directory for the database at '{}' failed", path.to_string_lossy())
-        }
-        WriteDatabase(path: PathBuf) {
-            description("database write error")
-            display("writing to the database '{}' failed", path.to_string_lossy())
-        }
-        ParseProxy(err: nix_index::hydra::Error){
-            description("proxy parse error")
-            display("Can not parse proxy settings")
-        }
-    }
+#[derive(ThisError, Debug)]
+pub enum Error {
+    #[error("querying available packages failed")]
+    QueryPackages,
+    #[error("fetching the file listing for store path '{}' failed", .0.as_str())]
+    FetchFiles(StorePath),
+    #[error("fetching the references of store path '{}' failed", .0.as_str())]
+    FetchReferences(StorePath),
+    #[error("loading the paths.cache file failed")]
+    LoadPathsCache,
+    #[error("writing the paths.cache file failed")]
+    WritePathsCache,
+    #[error("creating the database at '{}' failed", .0.to_string_lossy())]
+    CreateDatabase(PathBuf),
+    #[error("creating the directory for the database at '{}' failed", .0.to_string_lossy())]
+    CreateDatabaseDir(PathBuf),
+    #[error("writing to the database '{}' failed", .0.to_string_lossy())]
+    WriteDatabase(PathBuf),
+    #[error("Can not parse proxy settings")]
+    ParseProxy(nix_index::hydra::Error)
 }
 
 /// A stream of store paths (packages) with their associated file listings.
@@ -113,7 +94,7 @@ fn fetch_file_listings(
     let process = move |mut handle: WorkSetHandle<_, _>, path: StorePath| {
         fetcher
             .fetch_references(path.clone())
-            .map_err(|e| Error::with_chain(e, ErrorKind::FetchReferences(path)))
+            .map_err(|e| Error::FetchReferences(path))
             .and_then(move |(path, references)| match references {
                 Some(references) => {
                     for reference in references {
@@ -121,7 +102,7 @@ fn fetch_file_listings(
                         handle.add_work(hash, reference);
                     }
                     future::Either::B(fetcher.fetch_files(&path).then(move |r| match r {
-                        Err(e) => Err(Error::with_chain(e, ErrorKind::FetchFiles(path))),
+                        Err(e) => Err(Error::FetchFiles(path)),
                         Ok(Some(files)) => Ok(Some((path, files))),
                         Ok(None) => Ok(None),
                     }))
@@ -142,17 +123,17 @@ fn fetch_file_listings(
 /// Tries to load the file listings for all paths from a cache file named `paths.cache`.
 ///
 /// This function is used to implement the `--path-cache` option.
-fn try_load_paths_cache() -> Result<Option<(FileListingStream<'static>, WorkSetWatch)>> {
+fn try_load_paths_cache() -> Result<Option<(FileListingStream<'static>, WorkSetWatch)>, Error> {
     let file = match File::open("paths.cache") {
         Ok(file) => file,
         Err(ref e) if e.kind() == io::ErrorKind::NotFound => return Ok(None),
-        Err(e) => return Err(e).chain_err(|| ErrorKind::LoadPathsCache)?,
+        Err(e) => return Err(Error::LoadPathsCache),
     };
 
     let mut input = io::BufReader::new(file);
     let fetched: Vec<(StorePath, FileTree)> =
         bincode::deserialize_from(&mut input, bincode::Infinite)
-            .chain_err(|| ErrorKind::LoadPathsCache)?;
+            .map_err(|e| Error::LoadPathsCache)?;
     let workset = WorkSet::from_iter(
         fetched
             .into_iter()
@@ -181,14 +162,14 @@ struct Args {
 fn update_index(
     args: &Args,
     lp: &mut Core,
-) -> Result<()> {
+) -> Result<(), Error> {
     errstln!("+ querying available packages");
     // first try to load the paths.cache if requested, otherwise query
     // the packages normally. Also fall back to normal querying if the paths.cache
     // fails to load.
     let fetcher =
-        Fetcher::new(CACHE_URL.to_string(), lp.handle()).map_err(|e| ErrorKind::ParseProxy(e))?;
-    let query = || -> Result<_> {
+        Fetcher::new(CACHE_URL.to_string(), lp.handle()).map_err(|e| Error::ParseProxy(e))?;
+    let query = || -> Result<_, Error> {
         if args.path_cache {
             if let Some(cached) = try_load_paths_cache()? {
                 return Ok(cached);
@@ -220,8 +201,8 @@ fn update_index(
         }));
 
         let paths: Vec<StorePath> = all_paths
-            .map(|x| x.chain_err(|| ErrorKind::QueryPackages))
-            .collect::<Result<_>>()?;
+            .map(|x| x.map_err(|e| Error::QueryPackages))
+            .collect::<Result<_, Error>>()?;
 
         Ok(fetch_file_listings(&fetcher, args.jobs, paths.clone()))
     };
@@ -229,7 +210,7 @@ fn update_index(
 
     // Treat request errors as if the file list were missing
     let requests = requests.or_else(|e| {
-        errst!("\n{}", e.display_chain());
+        errst!("\n{}", e);
         Ok(None)
     });
 
@@ -252,18 +233,18 @@ fn update_index(
 
     errst!("+ generating index\r");
     fs::create_dir_all(&args.database)
-        .chain_err(|| ErrorKind::CreateDatabaseDir(args.database.clone()))?;
+        .map_err(|e| Error::CreateDatabaseDir(args.database.clone()))?;
     let mut db = database::Writer::create(args.database.join("files"), args.compression_level)
-        .chain_err(|| ErrorKind::CreateDatabase(args.database.clone()))?;
+        .map_err(|e| Error::CreateDatabase(args.database.clone()))?;
 
     let mut results: Vec<(StorePath, FileTree)> = Vec::new();
-    lp.run(requests.for_each(|entry| -> Result<_> {
+    lp.run(requests.for_each(|entry| -> Result<_, Error> {
         if args.path_cache {
             results.push(entry.clone());
         }
         let (path, files) = entry;
         db.add(path, files)
-            .chain_err(|| ErrorKind::WriteDatabase(args.database.clone()))?;
+            .map_err(|e| Error::WriteDatabase(args.database.clone()))?;
         Ok(())
     }))?;
     errstln!("");
@@ -271,15 +252,15 @@ fn update_index(
     if args.path_cache {
         errstln!("+ writing path cache");
         let mut output = io::BufWriter::new(
-            File::create("paths.cache").chain_err(|| ErrorKind::WritePathsCache)?,
+            File::create("paths.cache").map_err(|e| Error::WritePathsCache)?,
         );
         bincode::serialize_into(&mut output, &results, bincode::Infinite)
-            .chain_err(|| ErrorKind::WritePathsCache)?;
+            .map_err(|e| Error::WritePathsCache)?;
     }
 
     let index_size = db
         .finish()
-        .chain_err(|| ErrorKind::WriteDatabase(args.database.clone()))?;
+        .map_err(|e| Error::WriteDatabase(args.database.clone()))?;
     errstln!("+ wrote index of {} bytes", index_size.separated_string());
 
     Ok(())
@@ -352,13 +333,13 @@ fn main() {
     if let Err(e) = update_index(&args, &mut lp) {
         errln!("error: {}", e);
 
-        for e in e.iter().skip(1) {
-            errln!("caused by: {}", e);
-        }
+        // for e in e.iter().skip(1) {
+        //     errln!("caused by: {}", e);
+        // }
 
-        if let Some(backtrace) = e.backtrace() {
-            errln!("backtrace: {:?}", backtrace);
-        }
+        // if let Some(backtrace) = e.backtrace() {
+        //     errln!("backtrace: {:?}", backtrace);
+        // }
         process::exit(2);
     }
 }

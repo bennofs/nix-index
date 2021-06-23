@@ -34,72 +34,94 @@ use xz2::write::XzDecoder;
 use files::FileTree;
 use package::{PathOrigin, StorePath};
 use util;
+use thiserror::Error as ThisError;
 
-error_chain! {
-    errors {
-        Http(url: String, code: StatusCode) {
-            description("http status code error")
-            display("request GET '{}' failed with HTTP error {}", url, code)
-        }
-        ParseResponse(url: String, tmp_file: Option<PathBuf>) {
-            description("response parse error")
-            display("response to GET '{}' failed to parse{}", url, tmp_file.as_ref().map_or("".into(), |f| format!(" (response saved to {})", f.to_string_lossy())))
-        }
-        ParseStorePath(url: String, path: String) {
-            description("store path parse error")
-            display("response to GET '{}' contained invalid store path '{}', expected string matching format $(NIX_STORE_DIR)$(HASH)-$(NAME)", url, path)
-        }
-        Unicode(url: String, bytes: Vec<u8>, err: Utf8Error) {
-            description("unicode error")
-            display("response to GET '{}' contained invalid unicode byte {}: {}", url, bytes[err.valid_up_to()], err)
-        }
-        Decode(url: String) {
-            description("decoder error")
-            display("response to GET '{}' could not be decoded", url)
-        }
-        UnsupportedEncoding(url: String, encoding: Option<ContentEncoding>) {
-            description("unsupported content-encoding")
-            display(
-                "response to GET '{}' had unsupported content-encoding ({})",
-                url,
-                encoding.as_ref().map_or("not present".to_string(), |v| format!("'{}'", v)),
-            )
-        }
-        Timeout {
-            description("timeout exceeded")
-        }
-        TimerError {
-            description("timer failure")
-        }
-        ParseProxy(url: String) {
-            description("proxy config error")
-            display("Can not parse proxy url ({})", url)
-        }
-    }
-    foreign_links {
-        Hyper(hyper::Error);
-    }
+#[derive(ThisError, Debug)]
+pub enum Error {
+    #[error("request GET '{}' failed with HTTP error {}", .0, .1)]
+    Http(String, StatusCode),
+    #[error("response to GET '{}' failed to parse{}", .0, .1.as_ref().map_or("".into(), |f| format!(" (response saved to {})", f.to_string_lossy())))]
+    ParseResponse(String, Option<PathBuf>), 
+    #[error("response to GET '{}' contained invalid store path '{}', expected string matching format $(NIX_STORE_DIR)$(HASH)-$(NAME)", .0, .1)]
+    ParseStorePath(String, String),
+    #[error("response to GET '{}' contained invalid unicode byte {}: {}", .0, .1[.2.valid_up_to()], .2)]
+    Unicode(String, Vec<u8>, Utf8Error),
+    #[error("response to GET '{}' could not be decoded", .0)]
+    Decode(String),
+    #[error("response to GET '{}' had unsupported content-encoding ({})", .0, .1.as_ref().map_or("not present".to_string(), |v| format!("'{}'", v)) )]
+    UnsupportedEncoding(String, Option<ContentEncoding>),
+    #[error("Timeout exceeded")]
+    Timeout,
+    #[error("Timer failure")]
+    TimerError,
+    #[error("Can not parse proxy url ({})", .0)]
+    ParseProxy(String),
+    #[error("Error retrying")]
+    RetryError,
+    #[error("Hyper error")]
+    Hyper(#[from] hyper::Error)
 }
+
+
+
+// error_chain! {
+//     errors {
+//         Http(url: String, code: StatusCode) {
+//             description("http status code error")
+//             display("request GET '{}' failed with HTTP error {}", url, code)
+//         }
+//         ParseResponse(url: String, tmp_file: Option<PathBuf>) {
+//             description("response parse error")
+//             display("response to GET '{}' failed to parse{}", url, tmp_file.as_ref().map_or("".into(), |f| format!(" (response saved to {})", f.to_string_lossy())))
+//         }
+//         ParseStorePath(url: String, path: String) {
+//             description("store path parse error")
+//             display("response to GET '{}' contained invalid store path '{}', expected string matching format $(NIX_STORE_DIR)$(HASH)-$(NAME)", url, path)
+//         }
+//         Unicode(url: String, bytes: Vec<u8>, err: Utf8Error) {
+//             description("unicode error")
+//             display("response to GET '{}' contained invalid unicode byte {}: {}", url, bytes[err.valid_up_to()], err)
+//         }
+//         Decode(url: String) {
+//             description("decoder error")
+//             
+//         }
+//         UnsupportedEncoding(url: String, encoding: Option<ContentEncoding>) {
+//             description("unsupported content-encoding")
+//             
+//         }
+//         Timeout {
+//             description("timeout exceeded")
+//         }
+//         TimerError {
+//             description("timer failure")
+//         }
+//         ParseProxy(url: String) {
+//             description("proxy config error")
+//             
+//         }
+//     }
+//     foreign_links {
+//         Hyper(hyper::Error);
+//     }
+// }
 
 impl<T> From<TimeoutError<T>> for Error {
     fn from(err: TimeoutError<T>) -> Error {
         use self::TimeoutError::*;
         match err {
-            Timer(_, e) => Error::with_chain(e, ErrorKind::TimerError),
-            TimedOut(_) => Error::from(ErrorKind::Timeout),
+            Timer(_, e) => Error::TimerError,
+            TimedOut(_) => Error::Timeout
         }
     }
 }
 
 impl From<tokio_retry::Error<Error>> for Error {
     fn from(err: tokio_retry::Error<Error>) -> Error {
-        use tokio_retry::Error::*;
-        match err {
-            TimerError(e) => Error::with_chain(e, ErrorKind::TimerError),
-            OperationError(e) => e,
-        }
-    }
+        err.into()
+    } 
 }
+
 
 enum Client {
     Proxy(
@@ -110,21 +132,21 @@ enum Client {
 }
 
 impl Client {
-    pub fn new(handle: &Handle) -> Result<Client> {
+    pub fn new(handle: &Handle) -> Result<Client, Error> {
         let connector = HttpConnector::new(4, handle);
         let http_proxy = var("HTTP_PROXY");
 
         match http_proxy {
             Ok(proxy_url) => {
                 let mut url =
-                    Url::parse(&proxy_url).map_err(|_| ErrorKind::ParseProxy(proxy_url.clone()))?;
+                    Url::parse(&proxy_url).map_err(|_| Error::ParseProxy(proxy_url.clone()))?;
                 let username = String::from(url.username()).clone();
                 let password = url.password().map(|pw| String::from(pw));
 
                 url.set_username("")
-                    .map_err(|_| ErrorKind::ParseProxy(proxy_url.clone()))?;
+                    .map_err(|_| Error::ParseProxy(proxy_url.clone()))?;
                 url.set_password(None)
-                    .map_err(|_| ErrorKind::ParseProxy(proxy_url.clone()))?;
+                    .map_err(|_| Error::ParseProxy(proxy_url.clone()))?;
 
                 // No need to check for the error. Because Url::parse()? already checked it.
                 let uri = url.to_string().parse().unwrap();
@@ -174,7 +196,7 @@ impl Client {
 
                 let proxy_connector = Rc::new(
                     hyper_proxy::ProxyConnector::from_proxy(connector, proxy)
-                        .map_err(|_| ErrorKind::ParseProxy(proxy_url.clone()))?,
+                        .map_err(|_| Error::ParseProxy(proxy_url.clone()))?,
                 );
 
                 Ok(Client::Proxy(
@@ -239,7 +261,7 @@ impl Fetcher {
     pub fn new(
         cache_url: String,
         handle: Handle,
-    ) -> Result<Fetcher> {
+    ) -> Result<Fetcher, Error> {
         let client = Client::new(&handle)?;
         let timer = tokio_timer::wheel().build();
         Ok(Fetcher {
@@ -296,7 +318,7 @@ impl Fetcher {
             }
 
             if !code.is_success() {
-                return Either::A(future::err(Error::from(ErrorKind::Http(url, code))));
+                return Either::A(future::err(Error::from(Error::Http(url, code))));
             }
 
             // Determine the encoding. Uses the provided encoding or an encoding computed
@@ -305,7 +327,7 @@ impl Fetcher {
                 Some(e) => e,
                 None => {
                     return Either::A(future::err(
-                        ErrorKind::UnsupportedEncoding(
+                        Error::UnsupportedEncoding(
                             url,
                             res.headers().get::<ContentEncoding>().cloned(),
                         )
@@ -328,13 +350,13 @@ impl Fetcher {
                             move |(url, mut decoder), chunk| {
                                 decoder
                                     .write_all(&chunk)
-                                    .chain_err(|| ErrorKind::Decode(url.clone()))
+                                    .map_err(|e| Error::Decode(url.clone()))
                                     .map(move |_| (url, decoder))
                             },
                         )
                         .and_then(|(url, mut d)| {
                             d.finish()
-                                .chain_err(|| ErrorKind::Decode(url.clone()))
+                                .map_err(|e| Error::Decode(url.clone()))
                                 .map(move |v| (url, v))
                         });
 
@@ -348,13 +370,13 @@ impl Fetcher {
                             move |(url, mut decoder), chunk| {
                                 decoder
                                     .write_all(&chunk)
-                                    .chain_err(|| ErrorKind::Decode(url.clone()))
+                                    .map_err(|e| Error::Decode(url.clone()))
                                     .map(move |_| (url, decoder))
                             },
                         )
                         .and_then(|(url, mut d)| {
                             d.finish()
-                                .chain_err(|| ErrorKind::Decode(url.clone()))
+                                .map_err(|e| Error::Decode(url.clone()))
                                 .map(move |v| (url, v))
                         });
 
@@ -365,7 +387,7 @@ impl Fetcher {
                     let result = content
                         .fold(Vec::new(), |mut v, chunk| {
                             v.extend_from_slice(&chunk);
-                            Ok(v) as Result<_>
+                            Ok(v) as Result<_, Error>
                         })
                         .map(move |r| (url, r));
                     Either::B(Either::B(result))
@@ -423,7 +445,7 @@ impl Fetcher {
                 if line.starts_with(references) {
                     let line = &line[references.len()..];
                     let line = str::from_utf8(line)
-                        .map_err(|e| ErrorKind::Unicode(url.clone(), line.to_vec(), e))?;
+                        .map_err(|e| Error::Unicode(url.clone(), line.to_vec(), e))?;
                     result = line
                         .trim()
                         .split_whitespace()
@@ -433,20 +455,20 @@ impl Fetcher {
                                 ..path.origin().into_owned()
                             };
                             StorePath::parse(new_origin, new_path).ok_or_else(|| {
-                                ErrorKind::ParseStorePath(url.clone(), new_path.to_string()).into()
+                                Error::ParseStorePath(url.clone(), new_path.to_string()).into()
                             })
                         })
-                        .collect::<Result<Vec<_>>>()?;
+                        .collect::<Result<Vec<_>, Error>>()?;
                 }
 
                 if line.starts_with(store_path) {
                     let line = &line[references.len()..];
                     let line = str::from_utf8(line)
-                        .map_err(|e| ErrorKind::Unicode(url.clone(), line.to_vec(), e))?;
+                        .map_err(|e| Error::Unicode(url.clone(), line.to_vec(), e))?;
                     let line = line.trim();
 
                     path = StorePath::parse(path.origin().into_owned(), line)
-                        .ok_or_else(|| ErrorKind::ParseStorePath(url.clone(), line.to_string()))?;
+                        .ok_or_else(|| Error::ParseStorePath(url.clone(), line.to_string()))?;
                 }
             }
 
@@ -484,8 +506,8 @@ impl Fetcher {
 
             let now = Instant::now();
             let response: FileListingResponse =
-                serde_json::from_slice(&contents).chain_err(|| {
-                    ErrorKind::ParseResponse(
+                serde_json::from_slice(&contents).map_err(|e| {
+                    Error::ParseResponse(
                         url,
                         util::write_temp_file("file_listing.json", &contents),
                     )
